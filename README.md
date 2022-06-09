@@ -1,2 +1,2 @@
 # bglite
-Point neuron models of basal ganglia
+Point neuron models for simulations of basal ganglia nuclei.

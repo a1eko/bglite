@@ -1,0 +1,164 @@
+"""
+aeif_cond_bg - Conductance based exponential integrate-and-fire neuron model
+############################################################################
+
+Description
++++++++++++
+
+aeif_cond_bg is the adaptive exponential integrate and fire neuron according to Brette and Gerstner (2005), with post-synaptic conductances for AMPA, NMDA and GABA_A conductance-based synapses with beta-function (difference of exponentials) time course. Voltage-dependent NMDA with instantaneous unblocking.
+
+The membrane potential is given by the following differential equation:
+
+.. math::
+
+   C_m \frac{dV_m}{dt} =
+   -g_L(V_m-E_L)+g_L\Delta_T\exp\left(\frac{V_m-V_{th}}{\Delta_T}\right) -
+ g_e(t)(V_m-E_e) \\
+                                                     -g_i(t)(V_m-E_i)-w + I_e
+
+and
+
+.. math::
+
+ \tau_w \frac{dw}{dt} = a(V_m-E_L) - w
+
+Note that the membrane potential can diverge to positive infinity due to the exponential term. To avoid numerical instabilities, instead of :math:`V_m`, the value :math:`\min(V_m,V_{peak})` is used in the dynamical equations.
+
+
+References
+++++++++++
+
+.. [1] Brette R and Gerstner W (2005). Adaptive exponential
+       integrate-and-fire model as an effective description of neuronal
+       activity. Journal of Neurophysiology. 943637-3642
+       DOI: https://doi.org/10.1152/jn.00686.2005
+
+
+See also
+++++++++
+
+iaf_cond_alpha, aeif_cond_exp, ht_neuron
+"""
+neuron aeif_cond_bg:
+  state:
+    V_m mV = E_L   # Membrane potential
+    w pA = 0 pA    # Spike-adaptation current
+
+    g_AMPA real = 0
+    g_NMDA real = 0
+    g_GABA_A real = 0
+    g_AMPA$ real = AMPAInitialValue
+    g_NMDA$ real = NMDAInitialValue
+    g_GABA_A$ real = GABA_AInitialValue
+  end
+
+  equations:
+    inline V_bounded mV = min(V_m, V_peak) # prevent exponential divergence
+    
+    inline I_syn_ampa pA = -convolve(g_AMPA, AMPA) * (V_bounded - E_rev_AMPA)
+    inline I_syn_nmda pA = -convolve(g_NMDA, NMDA) * (V_bounded - E_rev_NMDA) / (1 + exp((V_act_NMDA - V_bounded) / S_act_NMDA))
+    inline I_syn_gaba_a pA = -convolve(g_GABA_A, GABA_A) * (V_bounded - E_rev_GABA_A)
+    inline I_syn pA = I_syn_ampa + I_syn_nmda + I_syn_gaba_a
+
+    inline exp_arg real = (V_bounded - V_th) / Delta_T
+    inline I_spike pA = g_L * Delta_T * exp(exp_arg)
+
+    V_m' = (-g_L * (V_bounded - E_L) + I_spike + I_syn - w + I_e + I_stim) / C_m
+    w' = (a * (V_bounded - E_L) - w) / tau_w
+
+    kernel g_AMPA' = g_AMPA$ - g_AMPA  / tau_decay_AMPA,
+           g_AMPA$' = -g_AMPA$ / tau_rise_AMPA
+
+    kernel g_NMDA' = g_NMDA$ - g_NMDA / tau_decay_NMDA,
+           g_NMDA$' = -g_NMDA$ / tau_rise_NMDA
+
+    kernel g_GABA_A' = g_GABA_A$ - g_GABA_A / tau_decay_GABA_A,
+           g_GABA_A$' = -g_GABA_A$ / tau_rise_GABA_A
+  end
+
+  parameters:
+    # membrane parameters
+    C_m pF = 281.0 pF       # Membrane Capacitance
+    t_ref ms = 0.0 ms       # Refractory period
+    V_reset mV = -60.0 mV   # Reset Potential
+    g_L nS = 30.0 nS        # Leak Conductance
+    E_L mV = -70.6 mV       # Leak reversal Potential (aka resting potential)
+
+    # spike adaptation parameters
+    a nS = 4 nS             # Subthreshold adaptation
+    b pA = 80.5 pA          # Spike-triggered adaptation
+    Delta_T mV = 2.0 mV     # Slope factor
+    tau_w ms = 144.0 ms     # Adaptation time constant
+    V_th mV = -50.4 mV      # Threshold Potential
+    V_peak mV = 0 mV        # Spike detection threshold
+
+    # Parameters for synapse of type AMPA, GABA_A and NMDA
+    g_peak_AMPA nS = 0.1 nS      # peak conductance
+    E_rev_AMPA mV = 0.0 mV       # reversal potential
+    tau_rise_AMPA ms = 0.5 ms       # rise time, Tau_1
+    tau_decay_AMPA ms = 2.4 ms       # decay time, Tau_1 < Tau_2
+    g_peak_NMDA nS = 0.075 nS    # peak conductance
+    tau_rise_NMDA ms = 4.0 ms       # rise time, Tau_1
+    tau_decay_NMDA ms = 40.0 ms      # decay time, Tau_1 < Tau_2
+    E_rev_NMDA mV = 0.0 mV       # reversal potential
+    V_act_NMDA mV = -58.0 mV      # inactive for V << Vact, inflection of sigmoid
+    S_act_NMDA mV = 2.5 mV        # scale of inactivation
+    g_peak_GABA_A nS = 0.33 nS   # peak conductance
+    tau_rise_GABA_A ms = 1.0 ms     # rise time, Tau_1
+    tau_decay_GABA_A ms = 7.0 ms     # decay time, Tau_1 < Tau_2
+    E_rev_GABA_A mV = -70.0 mV   # reversal potential
+
+    # constant external input current
+    I_e pA = 0 pA
+  end
+
+  internals:
+    # refractory time in steps
+    RefractoryCounts integer = steps(t_ref)
+    # counts number of tick during the refractory period
+    r integer
+
+    AMPAInitialValue real = compute_synapse_constant(tau_rise_AMPA, tau_decay_AMPA, g_peak_AMPA)
+    NMDAInitialValue real = compute_synapse_constant(tau_rise_NMDA, tau_decay_NMDA, g_peak_NMDA)
+
+    GABA_AInitialValue real = compute_synapse_constant(tau_rise_GABA_A, tau_decay_GABA_A, g_peak_GABA_A)
+  end
+
+  input:
+    AMPA nS  <- spike
+    NMDA nS  <- spike
+    GABA_A nS <- spike
+    I_stim pA <- continuous
+  end
+
+  output: spike
+
+  update:
+    integrate_odes()
+
+    if r > 0: # refractory
+      r -= 1 # decrement refractory ticks count
+      V_m = V_reset # clamp potential
+    elif V_m >= V_peak: # threshold crossing detection
+      r = RefractoryCounts + 1
+      V_m = V_reset # clamp potential
+      w += b
+      emit_spike()
+    end
+  end
+
+  function compute_synapse_constant(Tau_1 ms, Tau_2 ms, g_peak real) real:
+    # Factor used to account for the missing 1/((1/Tau_2)-(1/Tau_1)) term
+    # in the ht_neuron_dynamics integration of the synapse terms.
+    # See: Exact digital simulation of time-invariant linear systems
+    # with applications to neuronal modeling, Rotter and Diesmann,
+    # section 3.1.2.
+    exact_integration_adjustment real = ((1 / Tau_2) - (1 / Tau_1)) * ms
+
+    t_peak real = (Tau_2 * Tau_1) * ln(Tau_2 / Tau_1) / (Tau_2 - Tau_1) / ms
+    normalisation_factor real = 1 / (exp(-t_peak / Tau_1) - exp(-t_peak / Tau_2))
+
+    return g_peak * normalisation_factor * exact_integration_adjustment
+  end
+
+end
